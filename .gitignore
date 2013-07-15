@@ -13,6 +13,8 @@ distribute-0.6.8.tar.gz
 gunicorn.egg-info
 nohup.out
 .coverage
+.project
+.pydevproject
 doc/.sass-cache
 examples/frameworks/pylonstest/PasteScript*
 examples/frameworks/pylonstest/pylonstest.egg-info/
