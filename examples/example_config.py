@@ -38,7 +38,7 @@ backlog = 2048
 #       of the other worker classes.
 #
 #       An string referring to a 'gunicorn.workers' entry point
-#       or a MODULE:CLASS pair where CLASS is a subclass of
+#       or a python path to a subclass of
 #       gunicorn.workers.base.Worker. The default provided values
 #       are:
 #
@@ -144,7 +144,7 @@ tmp_upload_dir = None
 #   Logging
 #
 #   logfile - The path to a log file to write to.
-#   
+#
 #       A path string. "-" means log to stdout.
 #
 #   loglevel - The granularity of log output
@@ -152,8 +152,9 @@ tmp_upload_dir = None
 #       A string of "debug", "info", "warning", "error", "critical"
 #
 
-logfile = '-'
+errorlog = '-'
 loglevel = 'info'
+accesslog = '-'
 
 #
 # Process naming
@@ -189,10 +190,13 @@ proc_name = None
 #
 
 def post_fork(server, worker):
-    server.log.info("Worker spawned (pid: %s)" % worker.pid)
+    server.log.info("Worker spawned (pid: %s)", worker.pid)
 
 def pre_fork(server, worker):
     pass
 
 def pre_exec(server):
     server.log.info("Forked child, re-executing.")
+
+def when_ready(server):
+    server.log.info("Server is ready. Spwawning workers")

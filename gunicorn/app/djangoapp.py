@@ -1,148 +1,143 @@
 # -*- coding: utf-8 -
 #
-# This file is part of gunicorn released under the MIT license. 
+# This file is part of gunicorn released under the MIT license.
 # See the NOTICE for more information.
 
 import os
 import sys
-import traceback
 
-from gunicorn.config import Config
 from gunicorn.app.base import Application
+from gunicorn import util
+
+
+def is_setting_mod(path):
+    return (os.path.isfile(os.path.join(path, "settings.py")) or
+            os.path.isfile(os.path.join(path, "settings.pyc")))
+
+
+def find_settings_module(path):
+    path = os.path.abspath(path)
+    project_path = None
+    settings_name = "settings"
+
+    if os.path.isdir(path):
+        project_path = None
+        if not is_setting_mod(path):
+            for d in os.listdir(path):
+                if d in ('..', '.'):
+                    continue
+
+                root = os.path.join(path, d)
+                if is_setting_mod(root):
+                    project_path = root
+                    break
+        else:
+            project_path = path
+    elif os.path.isfile(path):
+        project_path = os.path.dirname(path)
+        settings_name, _ = os.path.splitext(os.path.basename(path))
+
+    return project_path, settings_name
+
+
+def make_default_env(cfg):
+    if cfg.django_settings:
+        os.environ['DJANGO_SETTINGS_MODULE'] = cfg.django_settings
+
+    if cfg.pythonpath and cfg.pythonpath is not None:
+        paths = cfg.pythonpath.split(",")
+        for path in paths:
+            pythonpath = os.path.abspath(cfg.pythonpath)
+            if pythonpath not in sys.path:
+                sys.path.insert(0, pythonpath)
+
+    try:
+        os.environ['DJANGO_SETTINGS_MODULE']
+    except KeyError:
+        # not settings env set, try to build one.
+        cwd = util.getcwd()
+        project_path, settings_name = find_settings_module(cwd)
+
+        if not project_path:
+            raise RuntimeError("django project not found")
+
+        pythonpath, project_name = os.path.split(project_path)
+        os.environ['DJANGO_SETTINGS_MODULE'] = "%s.%s" % (project_name,
+                settings_name)
+        if pythonpath not in sys.path:
+            sys.path.insert(0, pythonpath)
+
+        if project_path not in sys.path:
+            sys.path.insert(0, project_path)
+
 
 class DjangoApplication(Application):
-    
+
     def init(self, parser, opts, args):
-        from django.conf import ENVIRONMENT_VARIABLE
-        self.settings_modname = None
-        self.project_path = os.getcwd()
         if args:
-            settings_path = os.path.abspath(os.path.normpath(args[0]))
-            if not os.path.exists(settings_path):
-                self.no_settings(settings_path)
+            if ("." in args[0] and not (os.path.isfile(args[0])
+                    or os.path.isdir(args[0]))):
+                self.cfg.set("django_settings", args[0])
             else:
-                self.project_path = os.path.dirname(settings_path)
-        else:
-            try:
-                self.settings_modname = os.environ[ENVIRONMENT_VARIABLE]
-            except KeyError:
-                settings_path = os.path.join(self.project_path, "settings.py")
-                if not os.path.exists(settings_path):
-                    return self.no_settings(settings_path)
+                # not settings env set, try to build one.
+                project_path, settings_name = find_settings_module(
+                        os.path.abspath(args[0]))
+                if project_path not in sys.path:
+                    sys.path.insert(0, project_path)
 
-        if not self.settings_modname:
-            project_name = os.path.split(self.project_path)[-1]
-            settings_name, ext  = os.path.splitext(
-                    os.path.basename(settings_path))
-            self.settings_modname = "%s.%s" % (project_name, settings_name)
-            os.environ[ENVIRONMENT_VARIABLE] = self.settings_modname
-        
-        self.cfg.set("default_proc_name", self.settings_modname)
+                if not project_path:
+                    raise RuntimeError("django project not found")
 
-        # add the project path to sys.path
-        sys.path.insert(0, self.project_path)
-        sys.path.append(os.path.join(self.project_path, os.pardir))
+                pythonpath, project_name = os.path.split(project_path)
+                self.cfg.set("django_settings", "%s.%s" % (project_name,
+                        settings_name))
+                self.cfg.set("pythonpath", pythonpath)
 
-        # setup envoron
-        self.setup_environ() 
-
-    def setup_environ(self):
-        from django.core.management import setup_environ
-        try:
-            parts = self.settings_modname.split(".")
-            settings_mod = __import__(self.settings_modname)
-            if len(parts) > 1:
-                settings_mod = __import__(parts[0])
-                path = os.path.dirname(os.path.abspath(
-                            os.path.normpath(settings_mod.__file__)))
-                sys.path.append(path)
-                for part in parts[1:]: 
-                    settings_mod = getattr(settings_mod, part)
-                setup_environ(settings_mod)
-        except ImportError:
-            return self.no_settings(self.settings_modname, import_error=True)
-
-    def no_settings(self, path, import_error=False):
-        if import_error:
-            error = "Error: Can't find the settings in your PYTHONPATH"
-        else:
-            error = "Settings file '%s' not found in current folder.\n" % path
-        sys.stderr.write(error)
-        sys.stderr.flush()
-        sys.exit(1)
-        
     def load(self):
-        from django.conf import ENVIRONMENT_VARIABLE
-        from django.core.handlers.wsgi import WSGIHandler
-        os.environ[ENVIRONMENT_VARIABLE] = self.settings_modname
-        return WSGIHandler()
+        # set settings
+        make_default_env(self.cfg)
+
+        # load wsgi application and return it.
+        mod = util.import_module("gunicorn.app.django_wsgi")
+        return mod.make_wsgi_application()
+
 
 class DjangoApplicationCommand(Application):
-    
+
     def __init__(self, options, admin_media_path):
         self.usage = None
+        self.prog = None
         self.cfg = None
         self.config_file = options.get("config") or ""
         self.options = options
         self.admin_media_path = admin_media_path
         self.callable = None
+        self.project_path = None
         self.do_load_config()
 
-    def load_config(self):
-        self.cfg = Config()
-        
-        if self.config_file and os.path.exists(self.config_file):
-            cfg = {
-                "__builtins__": __builtins__,
-                "__name__": "__config__",
-                "__file__": self.config_file,
-                "__doc__": None,
-                "__package__": None
-            }
-            try:
-                execfile(self.config_file, cfg, cfg)
-            except Exception:
-                print "Failed to read config file: %s" % self.config_file
-                traceback.print_exc()
-                sys.exit(1)
-        
-            for k, v in list(cfg.items()):
-                # Ignore unknown names
-                if k not in self.cfg.settings:
-                    continue
-                try:
-                    self.cfg.set(k.lower(), v)
-                except:
-                    sys.stderr.write("Invalid value for %s: %s\n\n" % (k, v))
-                    raise
-        
-        for k, v in list(self.options.items()):
+    def init(self, *args):
+        if 'settings' in self.options:
+            self.options['django_settings'] = self.options.pop('settings')
+
+        cfg = {}
+        for k, v in self.options.items():
             if k.lower() in self.cfg.settings and v is not None:
-                self.cfg.set(k.lower(), v)
-        
+                cfg[k.lower()] = v
+        return cfg
+
     def load(self):
-        from django.core.servers.basehttp import AdminMediaHandler, WSGIServerException
-        from django.core.handlers.wsgi import WSGIHandler
-        try:
-            return  AdminMediaHandler(WSGIHandler(), self.admin_media_path)
-        except WSGIServerException, e:
-            # Use helpful error messages instead of ugly tracebacks.
-            ERRORS = {
-                13: "You don't have permission to access that port.",
-                98: "That port is already in use.",
-                99: "That IP address can't be assigned-to.",
-            }
-            try:
-                error_text = ERRORS[e.args[0].args[0]]
-            except (AttributeError, KeyError):
-                error_text = str(e)
-            sys.stderr.write(self.style.ERROR("Error: %s" % error_text) + '\n')
-            sys.exit(1)
-            
+        # set settings
+        make_default_env(self.cfg)
+
+        # load wsgi application and return it.
+        mod = util.import_module("gunicorn.app.django_wsgi")
+        return mod.make_command_wsgi_application(self.admin_media_path)
+
+
 def run():
     """\
     The ``gunicorn_django`` command line runner for launching Django
     applications.
     """
     from gunicorn.app.djangoapp import DjangoApplication
-    DjangoApplication("%prog [OPTIONS] [SETTINGS_PATH]").run()
+    DjangoApplication("%(prog)s [OPTIONS] [SETTINGS_PATH]").run()
