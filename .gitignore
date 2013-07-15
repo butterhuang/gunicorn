@@ -16,6 +16,7 @@ nohup.out
 .coverage
 .project
 .pydevproject
+.settings
 doc/.sass-cache
 bin/
 lib/
