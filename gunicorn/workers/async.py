@@ -80,7 +80,7 @@ class AsyncWorker(base.Worker):
         try:
             self.cfg.pre_request(self, req)
             resp, environ = wsgi.create(req, sock, addr,
-                    listener.getsockname(), self.cfg)
+                    listener.getsockname(), self.cfg, self.log)
             self.nr += 1
             if self.alive and self.nr >= self.max_requests:
                 self.log.info("Autorestarting worker after current request.")

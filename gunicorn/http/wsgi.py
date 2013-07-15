@@ -74,7 +74,7 @@ def proxy_environ(req):
     }
 
 
-def create(req, sock, client, server, cfg):
+def create(req, sock, client, server, cfg, log):
     resp = Response(req, sock)
 
     environ = default_environ(req, sock, cfg)
@@ -92,6 +92,8 @@ def create(req, sock, client, server, cfg):
             and client[0] not in cfg.forwarded_allow_ips:
         x_forwarded_for_header = None
         secure_headers = {}
+        # log warning to notice users set the "forwarded_allow_ips" to what they need
+        log.warning("Current frontend address %s is not allowed by the config option forwarded_allow_ips!" %client[0])
 
     for hdr_name, hdr_value in req.headers:
         if hdr_name == "EXPECT":
